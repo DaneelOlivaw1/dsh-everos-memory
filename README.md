@@ -31,7 +31,7 @@ EverOS side.
 
 ```bash
 cd ~/.dsh/profiles/web
-pnpm add github:DaneelOlivaw1/dsh-everos-memory#v0.1.0
+pnpm add github:DaneelOlivaw1/dsh-everos-memory#v0.2.1
 ```
 
 Then add `dsh-everos-memory` to `dsh.profile.bundles` in that profile's

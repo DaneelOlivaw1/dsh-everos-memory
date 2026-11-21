@@ -26,7 +26,7 @@ Hermes 在宿主进程里解决了同一件事：每轮结束后排队一个后�
 
 ```bash
 cd ~/.dsh/profiles/web
-pnpm add github:DaneelOlivaw1/dsh-everos-memory#v0.1.0
+pnpm add github:DaneelOlivaw1/dsh-everos-memory#v0.2.1
 ```
 
 再把 `dsh-everos-memory` 加进该 profile `package.json` 的 `dsh.profile.bundles`，
