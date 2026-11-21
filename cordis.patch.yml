@@ -15,8 +15,16 @@
         userId: daneel
         appId: default
         projectId: default
+        # End-only by default: nothing is extracted while you chat. The exchange
+        # lands when the session is disposed, with a long safety window behind it.
+        flushOnIdle: false
         idleSeconds: 300
+        safeIdleSeconds: 1800
         minMessages: 1
+        # Route writes through the server queue so its max_concurrency (1)
+        # actually bounds extraction; synchronous flushes ignore that limit.
+        asyncWrite: true
+        maxConcurrentWrites: 1
         recall: true
         recallTopK: 3
         recallMinScore: 0.1

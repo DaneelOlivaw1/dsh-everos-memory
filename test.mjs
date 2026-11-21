@@ -138,7 +138,7 @@ test('a failed add keeps the buffer for the next attempt', async () => {
 
 test('idle timer fires after the quiet window', async () => {
   const ctx = fakeContext()
-  apply(ctx, { ...config, idleSeconds: 5 })
+  apply(ctx, { ...config, idleSeconds: 5, flushOnIdle: true })
   const calls = []
   globalThis.fetch = async (url) => {
     calls.push(String(url))
@@ -239,6 +239,59 @@ test('recall searches the project scope and the fallback, without duplicates', a
   const text = steered[0].content[0].text
   assert.equal((text.match(/proj_1/g) ?? []).length, 1, 'deduped across scopes')
   assert.match(text, /vim 键位/, 'fallback memory still reachable')
+})
+
+test('by default nothing is extracted while chatting; dispose does it', async () => {
+  const ctx = fakeContext()
+  apply(ctx, { ...config, idleSeconds: 1, flushOnIdle: false, safeIdleSeconds: 0 })
+  const calls = []
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), body: JSON.parse(init.body) })
+    return { ok: true, json: async () => ({ data: { status: 'queued' } }) }
+  }
+  ctx.emit('session/event', { id: 'e1' }, userEvent('只在结束时才写'))
+  ctx.emit('session/event', { id: 'e1' }, assistantEvent('记住了'))
+  await new Promise((r) => setTimeout(r, 1400))
+  assert.equal(calls.length, 0, 'no extraction just from being quiet')
+  await ctx.emit('session/disposed', { id: 'e1' })
+  await new Promise((r) => setTimeout(r, 50))
+  assert.ok(calls.some((call) => call.url.endsWith('/flush')), 'dispose writes the exchange')
+})
+
+test('writes ask the server to queue them, so its concurrency limit applies', async () => {
+  const ctx = fakeContext()
+  apply(ctx, { ...config, asyncWrite: true })
+  const bodies = []
+  globalThis.fetch = async (url, init) => {
+    bodies.push(JSON.parse(init.body))
+    return { ok: true, json: async () => ({ data: { status: 'queued' } }) }
+  }
+  const definition = ctx.commands.find((command) => command.name === 'everos')
+  ctx.emit('session/event', { id: 'a1' }, userEvent('走队列'))
+  await definition.handler({ sessionId: 'a1', rawInput: 'flush' })
+  assert.equal(bodies[0].async_mode, true)
+  assert.equal(bodies[1].async_mode, true)
+})
+
+test('writes are serialised: never two flushes in flight', async () => {
+  const ctx = fakeContext()
+  apply(ctx, { ...config, maxConcurrentWrites: 1 })
+  let active = 0
+  let peak = 0
+  globalThis.fetch = async () => {
+    active += 1
+    peak = Math.max(peak, active)
+    await new Promise((r) => setTimeout(r, 40))
+    active -= 1
+    return { ok: true, json: async () => ({ data: { status: 'extracted' } }) }
+  }
+  const definition = ctx.commands.find((command) => command.name === 'everos')
+  for (const id of ['q1', 'q2', 'q3']) {
+    ctx.emit('session/event', { id }, userEvent(`来自 ${id} 的一句话`))
+    ctx.emit('session/event', { id }, assistantEvent('收到'))
+  }
+  await Promise.all(['q1', 'q2', 'q3'].map((id) => definition.handler({ sessionId: id, rawInput: 'flush' })))
+  assert.equal(peak, 1, 'only one request in flight at a time')
 })
 
 test('excluded and empty-base sessions are ignored', async () => {

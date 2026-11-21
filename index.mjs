@@ -58,6 +58,14 @@ export const Config = z.object({
   flushOnDispose: z.boolean().default(true).volatile(),
   /** Session-id substrings to ignore, e.g. ["subagent", "monitor"]. */
   excludeSessions: z.array(z.string()).default([]).volatile(),
+  /** Flush when a session has been quiet; off means only dispose and manual. */
+  flushOnIdle: z.boolean().default(false).volatile(),
+  /** Safety net when flushOnIdle is off: a very quiet session still lands. 0 disables. */
+  safeIdleSeconds: z.number().step(60).min(0).default(1800).volatile(),
+  /** Write via the server queue (async_mode) so its concurrency limit applies. */
+  asyncWrite: z.boolean().default(true).volatile(),
+  /** Flushes this process may run at once; 1 serialises every write. */
+  maxConcurrentWrites: z.number().step(1).min(1).default(1).volatile(),
   /** Derive project_id from the session's working directory. */
   projectFromCwd: z.boolean().default(true).volatile(),
   /** Also search the fallback scope, so cross-project facts stay reachable. */
@@ -192,6 +200,10 @@ export function apply(ctx, config) {
     get minMessages() { return Number(read(config.minMessages, 1)) },
     get flushOnDispose() { return read(config.flushOnDispose, true) },
     get excludeSessions() { return read(config.excludeSessions, []) ?? [] },
+    get flushOnIdle() { return read(config.flushOnIdle, false) },
+    get safeIdleSeconds() { return Number(read(config.safeIdleSeconds, 1800)) },
+    get asyncWrite() { return read(config.asyncWrite, true) },
+    get maxConcurrentWrites() { return Math.max(1, Number(read(config.maxConcurrentWrites, 1))) },
     get projectFromCwd() { return read(config.projectFromCwd, true) },
     get recallGlobal() { return read(config.recallGlobal, true) },
     get recall() { return read(config.recall, true) },
@@ -223,13 +235,29 @@ export function apply(ctx, config) {
     return response.json().catch(() => ({}))
   }
 
+  /** Write slots: a flush waits here instead of running beside another one. */
+  let inFlight = 0
+  const waiting = []
+  async function withSlot(task) {
+    if (inFlight >= c.maxConcurrentWrites) {
+      await new Promise((resolve) => waiting.push(resolve))
+    }
+    inFlight += 1
+    try {
+      return await task()
+    } finally {
+      inFlight -= 1
+      waiting.shift()?.()
+    }
+  }
+
   /** Hand one session's buffer to EverOS. Keeps the buffer on failure. */
   async function flush(sessionId, reason) {
     const entry = sessions.get(sessionId)
     if (entry === undefined || entry.busy) return 'busy'
     if (entry.messages.length === 0) return 'empty'
-    if (reason === 'idle' && entry.messages.length < c.minMessages) {
-      log('info', `idle skip: ${entry.messages.length} message(s) < minMessages ${c.minMessages} (${sessionId})`)
+    if ((reason === 'idle' || reason === 'safe') && entry.messages.length < c.minMessages) {
+      log('info', `${reason} skip: ${entry.messages.length} message(s) < minMessages ${c.minMessages} (${sessionId})`)
       return 'buffering'
     }
     if (!base()) {
@@ -242,12 +270,13 @@ export function apply(ctx, config) {
     entry.timer = undefined
     const batch = entry.messages.slice()
     const scope = { session_id: sessionId, app_id: c.appId, project_id: entry.projectId }
+    return withSlot(async () => {
     try {
-      const added = await post('/api/v2/memory/add', { ...scope, messages: batch })
+      const added = await post('/api/v2/memory/add', { ...scope, messages: batch, async_mode: c.asyncWrite })
       const addedStatus = added?.data?.status ?? added?.status
       // Always flush: "extracted" only means one cell closed, and boundary
       // detection leaves the open tail buffered (same reasoning as everos-mcp).
-      const flushed = await post('/api/v2/memory/flush', scope)
+      const flushed = await post('/api/v2/memory/flush', { ...scope, async_mode: c.asyncWrite })
       const flushedStatus = flushed?.data?.status ?? flushed?.status
       log('info', `flushed ${batch.length} message(s) from ${sessionId} (${reason}) add=${addedStatus} flush=${flushedStatus}`)
       entry.messages = entry.messages.slice(batch.length)
@@ -259,6 +288,7 @@ export function apply(ctx, config) {
     } finally {
       entry.busy = false
     }
+    })
   }
 
 
@@ -336,10 +366,13 @@ export function apply(ctx, config) {
     const entry = sessions.get(sessionId)
     if (entry === undefined) return
     if (entry.timer) clearTimeout(entry.timer)
+    entry.timer = undefined
+    const window = c.flushOnIdle ? c.idleSeconds : c.safeIdleSeconds
+    if (!(window > 0)) return
     const timer = setTimeout(() => {
       entry.timer = undefined
-      void flush(sessionId, 'idle')
-    }, Math.max(5, c.idleSeconds) * 1000)
+      void flush(sessionId, c.flushOnIdle ? 'idle' : 'safe')
+    }, Math.max(5, window) * 1000)
     timer.unref?.()
     entry.timer = timer
   }

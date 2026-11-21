@@ -88,6 +88,30 @@ token 不必写进 YAML。
 | `recallTimeoutMs` | `2000` | 单次检索硬超时 |
 | `recallMaxChars` | `1200` | 注入块字符上限 |
 
+## 何时调用 LLM（v0.4）
+
+**默认只在会话结束时抽取一次**：
+
+| 时机 | 是否调 LLM | 说明 |
+| --- | --- | --- |
+| 用户发一条消息 | ❌ | 只有 recall 检索（embedding，不是 LLM） |
+| 聊天过程中停顿 | ❌ | `flushOnIdle: false` 时不触发 |
+| 会话被销毁（`session/disposed`） | ✅ | 一次抽取，整段对话 |
+| 会话极久未销毁 | ✅ | `safeIdleSeconds` 安全网（默认 30 分钟），设 `0` 关闭 |
+| 手动 `/everos flush` | ✅ | 你说了算 |
+
+想让它在每次静默后都写（v0.3 的行为）：`flushOnIdle: true`。
+
+**并发**由服务端队列约束：写入走 `async_mode`，`[memorize.async_queue] max_concurrency = 1`
+时全局串行。同步 `/flush` **不受该限制**——这点实测确认过，所以 `asyncWrite` 默认开启。
+
+| 字段 | 默认 | 含义 |
+| --- | --- | --- |
+| `flushOnIdle` | `false` | 静默后是否抽取 |
+| `safeIdleSeconds` | `1800` | `flushOnIdle:false` 时的兜底窗口，`0` 关闭 |
+| `asyncWrite` | `true` | 走服务端队列，接受其并发上限 |
+| `maxConcurrentWrites` | `1` | 本机同时写几个（与队列互为保险） |
+
 ## 项目分区（v0.3）
 
 EverOS 的 `app_id` / `project_id` 在磁盘层隔离记忆。插件默认**按会话的工作目录派生 `project_id`**：

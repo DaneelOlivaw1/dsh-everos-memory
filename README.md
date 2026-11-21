@@ -92,6 +92,24 @@ minute.
 | `recallTimeoutMs` | `2000` | Hard deadline per search |
 | `recallMaxChars` | `1200` | Cap on the injected block |
 
+## When the LLM runs (v0.4)
+
+By default extraction happens **once, when the session ends**:
+
+| Moment | LLM call | Note |
+| --- | --- | --- |
+| Each user message | no | recall only (embeddings, not an LLM) |
+| A pause mid-chat | no | `flushOnIdle: false` |
+| `session/disposed` | yes | one extraction for the whole exchange |
+| Very long-lived session | yes | `safeIdleSeconds` safety net (30 min), `0` disables |
+| `/everos flush` | yes | on demand |
+
+Set `flushOnIdle: true` for the v0.3 behaviour (write after each quiet window).
+
+Writes go through the server queue (`async_mode`), so `[memorize.async_queue]
+max_concurrency = 1` serialises them globally. A synchronous `/flush` ignores
+that limit — measured, hence `asyncWrite` defaults to true.
+
 ## Project scoping (v0.3)
 
 EverOS isolates memory on disk by `app_id` / `project_id`. The plugin derives
