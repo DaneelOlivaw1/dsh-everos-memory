@@ -108,6 +108,8 @@ export function apply(ctx, config) {
     }
   }
 
+  log('info', `ready — endpoint=${base() || '(unset)'} scope=${config.userId}/${config.appId}/${config.projectId} idle=${config.idleSeconds}s`)
+
   const excluded = (id) => (config.excludeSessions ?? []).some((needle) => needle && id.includes(needle))
 
   const base = () => (config.baseUrl || process.env.EVEROS_BASE_URL || '').replace(/\/+$/, '')
