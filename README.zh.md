@@ -26,7 +26,7 @@ Hermes 在宿主进程里解决了同一件事：每轮结束后排队一个后�
 
 ```bash
 cd ~/.dsh/profiles/web
-pnpm add github:DaneelOlivaw1/dsh-everos-memory#v0.2.1
+pnpm add github:DaneelOlivaw1/dsh-everos-memory#v0.3.0
 ```
 
 再把 `dsh-everos-memory` 加进该 profile `package.json` 的 `dsh.profile.bundles`，
@@ -87,6 +87,33 @@ token 不必写进 YAML。
 | `recallMinScore` | `0.1` | 相关性下限 |
 | `recallTimeoutMs` | `2000` | 单次检索硬超时 |
 | `recallMaxChars` | `1200` | 注入块字符上限 |
+
+## 项目分区（v0.3）
+
+EverOS 的 `app_id` / `project_id` 在磁盘层隔离记忆。插件默认**按会话的工作目录派生 `project_id`**：
+
+```
+/Users/daneel/project/everos-memory-deploy  ->  project_id = everos-memory-deploy
+```
+
+规则：
+- 取 cwd 的目录名，转小写，非法字符折成 `-`，截断 64 字符——满足 EverOS 的 `^[a-zA-Z0-9_.-]+$`
+- 拿不到 cwd 时回落到配置里的 `projectId`（默认 `default`）
+
+写入落在 `<app>/<project>/users/<user>/`，检索时**项目内 + 全局两个作用域合并**：
+
+1. 先搜当前 `project_id`
+2. 再搜配置里的回落 `project_id`（跨项目通用事实）
+3. 按 `id` 去重、按分数排序、截到 `recallTopK`
+
+所以你在 A 项目里聊的构建命令，只会在 A 项目里被召回；而"我喜欢 vim 键位"这种通用偏好，任何项目里都能召回。
+
+| 字段 | 默认 | 含义 |
+| --- | --- | --- |
+| `projectFromCwd` | `true` | 用 cwd 派生 project_id；关掉则全用 `projectId` |
+| `recallGlobal` | `true` | 召回时是否并查回落作用域 |
+
+> 历史记忆（v0.3 之前在 `default` 作用域里写的）不会自动迁移，它们作为"全局记忆"继续可被召回。
 
 ## 命令
 

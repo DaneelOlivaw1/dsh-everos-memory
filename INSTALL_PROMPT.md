@@ -13,7 +13,7 @@
 
 **召回是 fail-soft 的**：2 秒超时、失败静默，任何异常都不会影响这一轮对话。
 
-仓库：<https://github.com/DaneelOlivaw1/dsh-everos-memory>（public，版本 `v0.2.0`）
+仓库：<https://github.com/DaneelOlivaw1/dsh-everos-memory>（public，版本 `v0.3.0`）
 
 ### 步骤
 
@@ -38,7 +38,7 @@ cp cordis.patch.yml "cordis.patch.yml.bak-everos-$(date +%Y%m%d%H%M)"
 
 ```bash
 cd "$HOME/.dsh/profiles/<profile>"
-pnpm add github:DaneelOlivaw1/dsh-everos-memory#v0.2.0
+pnpm add github:DaneelOlivaw1/dsh-everos-memory#v0.3.0
 ```
 
 没有 pnpm 就先装：`npm i -g pnpm`。装完确认模块能解析：
@@ -67,6 +67,8 @@ node -e "import('dsh-everos-memory').then(m=>console.log('ok',m.name))"
     userId: daneel
     idleSeconds: 300
     minMessages: 1
+    projectFromCwd: true
+    recallGlobal: true
     recall: true
     recallTopK: 3
     recallMinScore: 0.1

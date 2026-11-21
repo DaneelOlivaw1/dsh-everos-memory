@@ -26,7 +26,7 @@
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -58,6 +58,10 @@ export const Config = z.object({
   flushOnDispose: z.boolean().default(true).volatile(),
   /** Session-id substrings to ignore, e.g. ["subagent", "monitor"]. */
   excludeSessions: z.array(z.string()).default([]).volatile(),
+  /** Derive project_id from the session's working directory. */
+  projectFromCwd: z.boolean().default(true).volatile(),
+  /** Also search the fallback scope, so cross-project facts stay reachable. */
+  recallGlobal: z.boolean().default(true).volatile(),
   /** Inject memories relevant to the prompt before the model answers. */
   recall: z.boolean().default(true).volatile(),
   /** How many episodes a recall may inject. */
@@ -125,6 +129,28 @@ export function toMemoryMessage(event, config) {
   return null
 }
 
+/**
+ * Derive a scope-safe project id from an absolute working directory.
+ *
+ * EverOS accepts `^[a-zA-Z0-9_.-]+$` and rejects `"."`/`".."`; a directory name
+ * in the wild can violate both, so it is folded rather than passed through.
+ *
+ * @param cwd - the session's working directory, if any.
+ * @param fallback - scope to use when no usable name can be derived.
+ * @returns a valid `project_id`.
+ */
+export function projectIdFromCwd(cwd, fallback = 'default') {
+  if (typeof cwd !== 'string' || cwd.trim() === '') return fallback
+  const name = basename(cwd)
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]/g, '-')
+    .replace(/^[-.]+/, '')
+    .replace(/[-.]+$/, '')
+    .slice(0, 64)
+  if (name === '' || name === '.' || name === '..') return fallback
+  return name
+}
+
 export function apply(ctx, config) {
   /** sessionId -> { messages, timer, busy } */
   const sessions = new Map()
@@ -146,6 +172,12 @@ export function apply(ctx, config) {
   }
 
 
+  /** Scope for one session: its own project unless cwd scoping is off. */
+  const projectFor = (session) => {
+    if (!c.projectFromCwd) return c.projectId
+    return projectIdFromCwd(session?.header?.meta?.cwd ?? session?.header?.cwd, c.projectId)
+  }
+
   const excluded = (id) => (c.excludeSessions ?? []).some((needle) => needle && id.includes(needle))
 
   /** Live view of the config fields; volatile refs are unwrapped on each read. */
@@ -160,6 +192,8 @@ export function apply(ctx, config) {
     get minMessages() { return Number(read(config.minMessages, 1)) },
     get flushOnDispose() { return read(config.flushOnDispose, true) },
     get excludeSessions() { return read(config.excludeSessions, []) ?? [] },
+    get projectFromCwd() { return read(config.projectFromCwd, true) },
+    get recallGlobal() { return read(config.recallGlobal, true) },
     get recall() { return read(config.recall, true) },
     get recallTopK() { return Number(read(config.recallTopK, 3)) },
     get recallMinScore() { return Number(read(config.recallMinScore, 0.1)) },
@@ -207,7 +241,7 @@ export function apply(ctx, config) {
     if (entry.timer) clearTimeout(entry.timer)
     entry.timer = undefined
     const batch = entry.messages.slice()
-    const scope = { session_id: sessionId, app_id: c.appId, project_id: c.projectId }
+    const scope = { session_id: sessionId, app_id: c.appId, project_id: entry.projectId }
     try {
       const added = await post('/api/v2/memory/add', { ...scope, messages: batch })
       const addedStatus = added?.data?.status ?? added?.status
@@ -252,19 +286,27 @@ export function apply(ctx, config) {
    * Fail-soft by contract: a slow or broken search must never delay or break the
    * turn, so everything is time-boxed and swallowed.
    */
-  async function recall(sessionId, query) {
+  async function recall(sessionId, query, projectId) {
     if (!c.recall || !base()) return
     const text = String(query ?? '').trim()
     if (text.length < 4) return
     if (text === lastRecall.query && Date.now() - lastRecall.at < 60_000) return
     lastRecall = { query: text, at: Date.now() }
     try {
-      const found = await post(
-        '/api/v2/memory/search',
-        { user_id: c.userId, app_id: c.appId, project_id: c.projectId, query: text, method: 'hybrid', top_k: c.recallTopK },
-        c.recallTimeoutMs,
-      )
-      const all = found?.data?.episodes ?? []
+      const scope = { user_id: c.userId, app_id: c.appId, query: text, method: 'hybrid', top_k: c.recallTopK }
+      const scopes = [{ ...scope, project_id: projectId }]
+      if (c.recallGlobal && projectId !== c.projectId) scopes.push({ ...scope, project_id: c.projectId })
+
+      const seen = new Map()
+      for (const body of scopes) {
+        const found = await post('/api/v2/memory/search', body, c.recallTimeoutMs)
+        for (const episode of found?.data?.episodes ?? []) {
+          if (episode?.id === undefined) continue
+          const previous = seen.get(episode.id)
+          if (previous === undefined || Number(episode.score ?? 0) > Number(previous.score ?? 0)) seen.set(episode.id, episode)
+        }
+      }
+      const all = [...seen.values()].sort((left, right) => Number(right.score ?? 0) - Number(left.score ?? 0)).slice(0, c.recallTopK)
       const episodes = all.filter((episode) => Number(episode?.score ?? 0) >= c.recallMinScore)
       const block = recallBlock(episodes)
       if (!block) {
@@ -314,12 +356,12 @@ export function apply(ctx, config) {
 
     let entry = sessions.get(sessionId)
     if (entry === undefined) {
-      entry = { messages: [], timer: undefined, busy: false }
+      entry = { messages: [], timer: undefined, busy: false, projectId: projectFor(session) }
       sessions.set(sessionId, entry)
     }
     entry.messages.push(message)
     schedule(sessionId)
-    if (message.role === 'user') void recall(sessionId, message.content)
+    if (message.role === 'user') void recall(sessionId, message.content, entry.projectId)
   })
 
   ctx.on('session/disposed', (session) => {
@@ -349,7 +391,7 @@ export function apply(ctx, config) {
         return [
           `EverOS 记忆捕获 · ${c.enabled ? '开启' : '关闭'}`,
           `- 端点：${base() || '(未配置 baseUrl)'}`,
-          `- 归属：${c.userId} / ${c.appId} / ${c.projectId}`,
+          `- 归属：${c.userId} / ${c.appId} / ${entry?.projectId ?? c.projectId}${c.projectFromCwd ? '（按 cwd 派生）' : ''}`,
           `- 空闲窗口：${c.idleSeconds}s，最少 ${c.minMessages} 条`,
           `- 当前缓冲：${entry?.messages.length ?? 0} 条`,
         ].join('\n')

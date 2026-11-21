@@ -6,7 +6,7 @@
  *   node test.mjs
  */
 import assert from 'node:assert/strict'
-import { apply, messageText, clampText, toMemoryMessage } from './index.mjs'
+import { apply, messageText, clampText, toMemoryMessage, projectIdFromCwd } from './index.mjs'
 
 const config = {
   enabled: true,
@@ -206,6 +206,39 @@ test('a failing recall never throws and never blocks the turn', async () => {
   ctx.emit('session/event', { id: 'r2' }, userEvent('这一句会触发检索'))
   await new Promise((r) => setTimeout(r, 100))
   assert.equal(steered.length, 0)
+})
+
+test('project id derives from cwd and stays inside the ScopeId charset', () => {
+  assert.equal(projectIdFromCwd('/Users/d/project/everos-memory-deploy'), 'everos-memory-deploy')
+  assert.equal(projectIdFromCwd('/tmp/My Project!'), 'my-project')
+  assert.equal(projectIdFromCwd('/tmp/..'), 'default')
+  assert.equal(projectIdFromCwd('/tmp/__weird__name'), '__weird__name')
+  assert.equal(projectIdFromCwd('', 'fallback'), 'fallback')
+  assert.equal(projectIdFromCwd(undefined, 'fallback'), 'fallback')
+  assert.match(projectIdFromCwd('/x/' + 'a'.repeat(120)), /^[a-z0-9_.-]{1,64}$/)
+})
+
+test('recall searches the project scope and the fallback, without duplicates', async () => {
+  const steered = []
+  const ctx = fakeContext({ agent: { steer: (m) => steered.push(m) } })
+  apply(ctx, { ...config, recall: true, recallMinScore: 0.1, projectId: 'default' })
+  const searches = []
+  globalThis.fetch = async (url, init) => {
+    const body = JSON.parse(init.body)
+    searches.push(body.project_id)
+    const hits = body.project_id === 'alpha'
+      ? [{ id: 'proj_1', score: 0.6, summary: 'alpha 项目的构建命令是 pnpm build' }]
+      : [{ id: 'proj_1', score: 0.5, summary: 'alpha 项目的构建命令是 pnpm build' },
+         { id: 'glob_1', score: 0.2, summary: '用户偏好 vim 键位' }]
+    return { ok: true, json: async () => ({ data: { episodes: hits } }) }
+  }
+  ctx.emit('session/event', { id: 'scoped', header: { cwd: '/Users/d/project/alpha' } }, userEvent('这个项目怎么构建'))
+  await new Promise((r) => setTimeout(r, 60))
+  assert.deepEqual(searches, ['alpha', 'default'], 'project scope first, then fallback')
+  assert.equal(steered.length, 1)
+  const text = steered[0].content[0].text
+  assert.equal((text.match(/proj_1/g) ?? []).length, 1, 'deduped across scopes')
+  assert.match(text, /vim 键位/, 'fallback memory still reachable')
 })
 
 test('excluded and empty-base sessions are ignored', async () => {

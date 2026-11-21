@@ -31,7 +31,7 @@ EverOS side.
 
 ```bash
 cd ~/.dsh/profiles/web
-pnpm add github:DaneelOlivaw1/dsh-everos-memory#v0.2.1
+pnpm add github:DaneelOlivaw1/dsh-everos-memory#v0.3.0
 ```
 
 Then add `dsh-everos-memory` to `dsh.profile.bundles` in that profile's
@@ -91,6 +91,28 @@ minute.
 | `recallMinScore` | `0.1` | Relevance floor |
 | `recallTimeoutMs` | `2000` | Hard deadline per search |
 | `recallMaxChars` | `1200` | Cap on the injected block |
+
+## Project scoping (v0.3)
+
+EverOS isolates memory on disk by `app_id` / `project_id`. The plugin derives
+`project_id` from the session's working directory:
+
+```
+/Users/daneel/project/everos-memory-deploy  ->  project_id = everos-memory-deploy
+```
+
+Recall then searches **both** the current project and the fallback scope, merges
+the hits by id, sorts by score and truncates to `recallTopK`. So a build command
+learned in project A stays in project A, while a general preference ("I use vim
+keys") stays reachable everywhere.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `projectFromCwd` | `true` | Derive project_id from cwd |
+| `recallGlobal` | `true` | Also search the fallback scope |
+
+> Memories written before v0.3 live in the `default` scope and keep working as
+> the shared/global layer; nothing is migrated.
 
 ## Command
 
