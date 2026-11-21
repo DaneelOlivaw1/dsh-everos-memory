@@ -56,6 +56,18 @@ export const Config = z.object({
   excludeSessions: z.array(z.string()).default([]).volatile(),
 })
 
+/**
+ * Read one config field.
+ *
+ * Fields declared `.volatile()` arrive as a reference object with `get()`, not
+ * as the plain value (`JSON.stringify` renders them as `{}`). Everything this
+ * plugin reads goes through here so both shapes work.
+ */
+export function read(field, fallback) {
+  const value = typeof field?.get === 'function' ? field.get() : field
+  return value ?? fallback
+}
+
 /** Pull plain text out of an LLM message, ignoring tool blocks. */
 export function messageText(message) {
   const content = message?.content
@@ -84,15 +96,17 @@ export function clampText(text, max) {
 export function toMemoryMessage(event, config) {
   const type = event?.type
   const timestamp = Number.isFinite(event?.createdAt) ? event.createdAt : Date.now()
+  const cap = read(config.maxCharsPerMessage, 4000)
+  const userId = read(config.userId, 'default-user')
   if (type === 'user/message') {
-    const content = clampText(messageText(event.data), config.maxCharsPerMessage)
+    const content = clampText(messageText(event.data), cap)
     if (!content) return null
-    return { sender_id: config.userId, role: 'user', timestamp, content }
+    return { sender_id: userId, role: 'user', timestamp, content }
   }
   if (type === 'assistant/message') {
-    const content = clampText(messageText(event.data?.message), config.maxCharsPerMessage)
+    const content = clampText(messageText(event.data?.message), cap)
     if (!content) return null
-    return { sender_id: config.assistantSenderId ?? `${config.userId}-agent`, role: 'assistant', timestamp, content }
+    return { sender_id: read(config.assistantSenderId, `${userId}-agent`), role: 'assistant', timestamp, content }
   }
   return null
 }
@@ -109,12 +123,26 @@ export function apply(ctx, config) {
   }
 
 
-  const excluded = (id) => (config.excludeSessions ?? []).some((needle) => needle && id.includes(needle))
+  const excluded = (id) => (c.excludeSessions ?? []).some((needle) => needle && id.includes(needle))
 
-  const base = () => (config.baseUrl || process.env.EVEROS_BASE_URL || '').replace(/\/+$/, '')
-  const token = () => config.apiKey || process.env.EVEROS_API_KEY || ''
+  /** Live view of the config fields; volatile refs are unwrapped on each read. */
+  const c = {
+    get enabled() { return read(config.enabled, true) },
+    get baseUrl() { return read(config.baseUrl, '') },
+    get apiKey() { return read(config.apiKey, '') },
+    get userId() { return read(config.userId, 'default-user') },
+    get appId() { return read(config.appId, 'default') },
+    get projectId() { return read(config.projectId, 'default') },
+    get idleSeconds() { return Number(read(config.idleSeconds, 300)) },
+    get minMessages() { return Number(read(config.minMessages, 2)) },
+    get flushOnDispose() { return read(config.flushOnDispose, true) },
+    get excludeSessions() { return read(config.excludeSessions, []) ?? [] },
+  }
 
-  log('info', `ready — endpoint=${base() || '(unset)'} scope=${config.userId}/${config.appId}/${config.projectId} idle=${config.idleSeconds}s`)
+  const base = () => String(c.baseUrl || process.env.EVEROS_BASE_URL || '').replace(/\/+$/, '')
+  const token = () => String(c.apiKey || process.env.EVEROS_API_KEY || '')
+
+  log('info', `ready — endpoint=${base() || '(unset)'} scope=${c.userId}/${c.appId}/${c.projectId} idle=${c.idleSeconds}s`)
 
   async function post(path, body) {
     const response = await fetch(`${base()}${path}`, {
@@ -138,7 +166,7 @@ export function apply(ctx, config) {
     const entry = sessions.get(sessionId)
     if (entry === undefined || entry.busy) return 'busy'
     if (entry.messages.length === 0) return 'empty'
-    if (reason === 'idle' && entry.messages.length < config.minMessages) return 'buffering'
+    if (reason === 'idle' && entry.messages.length < c.minMessages) return 'buffering'
     if (!base()) {
       log('warn', 'baseUrl is empty; skipping flush')
       return 'unconfigured'
@@ -148,7 +176,7 @@ export function apply(ctx, config) {
     if (entry.timer) clearTimeout(entry.timer)
     entry.timer = undefined
     const batch = entry.messages.slice()
-    const scope = { session_id: sessionId, app_id: config.appId, project_id: config.projectId }
+    const scope = { session_id: sessionId, app_id: c.appId, project_id: c.projectId }
     try {
       const added = await post('/api/v2/memory/add', { ...scope, messages: batch })
       const status = added?.data?.status ?? added?.status
@@ -173,13 +201,13 @@ export function apply(ctx, config) {
     const timer = setTimeout(() => {
       entry.timer = undefined
       void flush(sessionId, 'idle')
-    }, Math.max(5, config.idleSeconds) * 1000)
+    }, Math.max(5, c.idleSeconds) * 1000)
     timer.unref?.()
     entry.timer = timer
   }
 
   ctx.on('session/event', (session, event) => {
-    if (!config.enabled || !base()) return
+    if (!c.enabled || !base()) return
     const sessionId = String(session?.id ?? '')
     if (!sessionId || excluded(sessionId)) return
     const message = toMemoryMessage(event, config)
@@ -195,7 +223,7 @@ export function apply(ctx, config) {
   })
 
   ctx.on('session/disposed', (session) => {
-    if (!config.enabled || !config.flushOnDispose) return
+    if (!c.enabled || !c.flushOnDispose) return
     const sessionId = String(session?.id ?? '')
     if (!sessionId) return
     void flush(sessionId, 'dispose').finally(() => {
@@ -219,10 +247,10 @@ export function apply(ctx, config) {
         }
         const entry = sessions.get(sessionId)
         return [
-          `EverOS 记忆捕获 · ${config.enabled ? '开启' : '关闭'}`,
+          `EverOS 记忆捕获 · ${c.enabled ? '开启' : '关闭'}`,
           `- 端点：${base() || '(未配置 baseUrl)'}`,
-          `- 归属：${config.userId} / ${config.appId} / ${config.projectId}`,
-          `- 空闲窗口：${config.idleSeconds}s，最少 ${config.minMessages} 条`,
+          `- 归属：${c.userId} / ${c.appId} / ${c.projectId}`,
+          `- 空闲窗口：${c.idleSeconds}s，最少 ${c.minMessages} 条`,
           `- 当前缓冲：${entry?.messages.length ?? 0} 条`,
         ].join('\n')
       },

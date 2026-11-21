@@ -149,6 +149,30 @@ test('idle timer fires after the quiet window', async () => {
   assert.equal(calls.length >= 1, true, 'idle flush ran')
 })
 
+test('volatile refs ({} / get()) are unwrapped like plain values', async () => {
+  const ctx = fakeContext()
+  const refConfig = {
+    ...config,
+    baseUrl: { get: () => 'https://memory.test' },
+    apiKey: { get: () => 'tok' },
+    userId: { get: () => 'daneel' },
+    idleSeconds: { get: () => 5 },
+    excludeSessions: { get: () => [] },
+  }
+  apply(ctx, refConfig)
+  const calls = []
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), auth: init.headers.authorization })
+    return { ok: true, json: async () => ({ data: { status: 'extracted' } }) }
+  }
+  ctx.emit('session/event', { id: 's5' }, userEvent('ref 配置也能跑'))
+  ctx.emit('session/event', { id: 's5' }, assistantEvent('是的'))
+  const definition = ctx.commands.find((command) => command.name === 'everos')
+  assert.equal(await definition.handler({ sessionId: 's5', rawInput: 'flush' }), 'EverOS: flushed')
+  assert.equal(calls[0].url, 'https://memory.test/api/v2/memory/add')
+  assert.equal(calls[0].auth, 'Bearer tok')
+})
+
 test('excluded and empty-base sessions are ignored', async () => {
   const ctx = fakeContext()
   apply(ctx, { ...config, baseUrl: '' })
