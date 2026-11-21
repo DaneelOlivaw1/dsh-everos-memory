@@ -313,6 +313,25 @@ test('a long session is chunked instead of sent in one oversized add', async () 
   assert.equal(bodies.at(-1).url.endsWith('/flush'), true, 'one flush after all adds')
 })
 
+test('harness-injected user messages are not remembered as user speech', async () => {
+  const ctx = fakeContext()
+  apply(ctx, config)
+  const bodies = []
+  globalThis.fetch = async (url, init) => {
+    bodies.push(JSON.parse(init.body))
+    return { ok: true, json: async () => ({ data: { status: 'queued' } }) }
+  }
+  const definition = ctx.commands.find((command) => command.name === 'everos')
+  const injected = userEvent('Time sampled while preparing turn 3, step 1: 2026-11-21T22:00:00+08:00')
+  injected.data.source = { kind: 'time-context', form: 'snapshot' }
+  ctx.emit('session/event', { id: 'noise' }, injected)
+  ctx.emit('session/event', { id: 'noise' }, userEvent('这句才是人说的'))
+  await definition.handler({ sessionId: 'noise', rawInput: 'flush' })
+  const sent = bodies.find((body) => Array.isArray(body.messages))?.messages ?? []
+  assert.equal(sent.length, 1, 'only the real turn is stored')
+  assert.match(sent[0].content, /这句才是人说的/)
+})
+
 test('excluded and empty-base sessions are ignored', async () => {
   const ctx = fakeContext()
   apply(ctx, { ...config, baseUrl: '' })

@@ -388,7 +388,14 @@ export function apply(ctx, config) {
     if (!c.enabled || !base()) return
     const sessionId = String(session?.id ?? '')
     if (!sessionId || excluded(sessionId)) return
-    if (event?.data?.source?.kind === 'everos-memory') return
+    // Only genuine turns count. The harness injects its own user-role messages
+    // (time samples as `time-context`, our own recall notes) and those would
+    // otherwise be remembered as things the user said.
+    const sourceKind = event?.data?.source?.kind
+    if (sourceKind !== undefined && sourceKind !== 'user') {
+      if (sourceKind !== 'everos-memory') log('info', `skipped injected message (${sourceKind})`)
+      return
+    }
     const message = toMemoryMessage(event, config)
     if (message === null) return
     received += 1

@@ -113,6 +113,14 @@ token 不必写进 YAML。
 | `maxConcurrentWrites` | `1` | 本机同时写几个（与队列互为保险） |
 | `maxBatchMessages` | `60` | 每次 `/add` 最多几条消息；整场对话一次性提交会超时失败 |
 
+## 只记真实发言（v0.4.2）
+
+DSH 会以**用户角色**注入自己的消息（时间采样 `source.kind = "time-context"`、本插件的召回提示
+`everos-memory`）。它们都不是你说的话，却会被当成用户发言写进记忆，产出一堆
+"daneel 注明浏览器时区为 Asia/Shanghai" 式的噪音。
+
+现在只收 `source.kind` 缺省或等于 `user` 的消息，其余跳过并记一行审计。
+
 ## 项目分区（v0.3）
 
 EverOS 的 `app_id` / `project_id` 在磁盘层隔离记忆。插件默认**按会话的工作目录派生 `project_id`**：
