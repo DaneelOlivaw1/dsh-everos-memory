@@ -108,12 +108,13 @@ export function apply(ctx, config) {
     }
   }
 
-  log('info', `ready — endpoint=${base() || '(unset)'} scope=${config.userId}/${config.appId}/${config.projectId} idle=${config.idleSeconds}s`)
 
   const excluded = (id) => (config.excludeSessions ?? []).some((needle) => needle && id.includes(needle))
 
   const base = () => (config.baseUrl || process.env.EVEROS_BASE_URL || '').replace(/\/+$/, '')
   const token = () => config.apiKey || process.env.EVEROS_API_KEY || ''
+
+  log('info', `ready — endpoint=${base() || '(unset)'} scope=${config.userId}/${config.appId}/${config.projectId} idle=${config.idleSeconds}s`)
 
   async function post(path, body) {
     const response = await fetch(`${base()}${path}`, {
