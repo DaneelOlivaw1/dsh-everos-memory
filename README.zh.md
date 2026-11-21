@@ -111,6 +111,7 @@ token 不必写进 YAML。
 | `safeIdleSeconds` | `1800` | `flushOnIdle:false` 时的兜底窗口，`0` 关闭 |
 | `asyncWrite` | `true` | 走服务端队列，接受其并发上限 |
 | `maxConcurrentWrites` | `1` | 本机同时写几个（与队列互为保险） |
+| `maxBatchMessages` | `60` | 每次 `/add` 最多几条消息；整场对话一次性提交会超时失败 |
 
 ## 项目分区（v0.3）
 

@@ -294,6 +294,25 @@ test('writes are serialised: never two flushes in flight', async () => {
   assert.equal(peak, 1, 'only one request in flight at a time')
 })
 
+test('a long session is chunked instead of sent in one oversized add', async () => {
+  const ctx = fakeContext()
+  apply(ctx, { ...config, maxBatchMessages: 2 })
+  const bodies = []
+  globalThis.fetch = async (url, init) => {
+    bodies.push({ url: String(url), body: JSON.parse(init.body) })
+    return { ok: true, json: async () => ({ data: { status: 'queued' } }) }
+  }
+  const definition = ctx.commands.find((command) => command.name === 'everos')
+  for (let index = 0; index < 5; index += 1) {
+    ctx.emit('session/event', { id: 'big' }, userEvent(`第 ${index} 条消息`))
+  }
+  await definition.handler({ sessionId: 'big', rawInput: 'flush' })
+  const adds = bodies.filter((call) => call.url.endsWith('/add'))
+  assert.equal(adds.length, 3, '5 messages at 2 per add')
+  assert.deepEqual(adds.map((call) => call.body.messages.length), [2, 2, 1])
+  assert.equal(bodies.at(-1).url.endsWith('/flush'), true, 'one flush after all adds')
+})
+
 test('excluded and empty-base sessions are ignored', async () => {
   const ctx = fakeContext()
   apply(ctx, { ...config, baseUrl: '' })

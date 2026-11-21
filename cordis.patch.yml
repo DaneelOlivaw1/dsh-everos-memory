@@ -25,6 +25,7 @@
         # actually bounds extraction; synchronous flushes ignore that limit.
         asyncWrite: true
         maxConcurrentWrites: 1
+        maxBatchMessages: 60
         recall: true
         recallTopK: 3
         recallMinScore: 0.1

@@ -202,6 +202,7 @@ export function apply(ctx, config) {
     get excludeSessions() { return read(config.excludeSessions, []) ?? [] },
     get flushOnIdle() { return read(config.flushOnIdle, false) },
     get safeIdleSeconds() { return Number(read(config.safeIdleSeconds, 1800)) },
+    get maxBatchMessages() { return Math.max(1, Number(read(config.maxBatchMessages, 60))) },
     get asyncWrite() { return read(config.asyncWrite, true) },
     get maxConcurrentWrites() { return Math.max(1, Number(read(config.maxConcurrentWrites, 1))) },
     get projectFromCwd() { return read(config.projectFromCwd, true) },
@@ -272,15 +273,21 @@ export function apply(ctx, config) {
     const scope = { session_id: sessionId, app_id: c.appId, project_id: entry.projectId }
     return withSlot(async () => {
     try {
-      const added = await post('/api/v2/memory/add', { ...scope, messages: batch, async_mode: c.asyncWrite })
-      const addedStatus = added?.data?.status ?? added?.status
+      const chunks = []
+      for (let index = 0; index < batch.length; index += c.maxBatchMessages) {
+        chunks.push(batch.slice(index, index + c.maxBatchMessages))
+      }
+      let addedStatus = 'none'
+      for (const chunk of chunks) {
+        const added = await post('/api/v2/memory/add', { ...scope, messages: chunk, async_mode: c.asyncWrite })
+        addedStatus = added?.data?.status ?? added?.status
+      }
       // Always flush: "extracted" only means one cell closed, and boundary
       // detection leaves the open tail buffered (same reasoning as everos-mcp).
       const flushed = await post('/api/v2/memory/flush', { ...scope, async_mode: c.asyncWrite })
       const flushedStatus = flushed?.data?.status ?? flushed?.status
-      log('info', `flushed ${batch.length} message(s) from ${sessionId} (${reason}) add=${addedStatus} flush=${flushedStatus}`)
+      log('info', `flushed ${batch.length} message(s) in ${chunks.length} chunk(s) from ${sessionId} (${reason}) add=${addedStatus} flush=${flushedStatus}`)
       entry.messages = entry.messages.slice(batch.length)
-      log('info', `flushed ${batch.length} message(s) from ${sessionId} (${reason})`)
       return 'flushed'
     } catch (error) {
       log('warn', `flush failed for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`)

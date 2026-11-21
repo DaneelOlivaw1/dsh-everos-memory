@@ -1,6 +1,6 @@
 {
   "name": "dsh-everos-memory",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "DeepSeek Harness bundle plugin: recalls relevant EverOS memories into the turn, and writes each session's exchange back once the session has been quiet for a settle window.",
   "type": "module",
   "main": "index.mjs",
