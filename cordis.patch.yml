@@ -17,3 +17,8 @@
         projectId: default
         idleSeconds: 300
         minMessages: 1
+        recall: true
+        recallTopK: 3
+        recallMinScore: 0.3
+        recallTimeoutMs: 2000
+        recallMaxChars: 1200

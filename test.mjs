@@ -20,10 +20,11 @@ const config = {
   maxCharsPerMessage: 4000,
   flushOnDispose: true,
   excludeSessions: ['subagent'],
+  recall: false,
 }
 
 /** Minimal Cordis context: records listeners, runs injected callbacks. */
-function fakeContext() {
+function fakeContext(cp = {}) {
   const listeners = new Map()
   const commands = []
   const ctx = {
@@ -38,6 +39,7 @@ function fakeContext() {
       for (const handler of listeners.get(event) ?? []) handler(...args)
     },
     commands,
+    agents: { get: () => cp.agent ?? null },
   }
   return ctx
 }
@@ -171,6 +173,39 @@ test('volatile refs ({} / get()) are unwrapped like plain values', async () => {
   assert.equal(await definition.handler({ sessionId: 's5', rawInput: 'flush' }), 'EverOS: flushed')
   assert.equal(calls[0].url, 'https://memory.test/api/v2/memory/add')
   assert.equal(calls[0].auth, 'Bearer tok')
+})
+
+test('recall injects high-score hits as a delimited notice', async () => {
+  const steered = []
+  const ctx = fakeContext({ agent: { steer: (m) => steered.push(m) } })
+  apply(ctx, { ...config, recall: true, recallMinScore: 0.3 })
+  globalThis.fetch = async (url) => ({
+    ok: true,
+    json: async () => (String(url).includes('/search')
+      ? { data: { episodes: [
+          { id: 'daneel_ep_1', score: 0.55, summary: '用户偏好 Postgres 17' },
+          { id: 'daneel_ep_2', score: 0.05, summary: '无关旧事' },
+        ] } }
+      : { data: { status: 'extracted' } }),
+  })
+  ctx.emit('session/event', { id: 'r1' }, userEvent('我用什么数据库来着'))
+  await new Promise((r) => setTimeout(r, 50))
+  assert.equal(steered.length, 1)
+  const text = steered[0].content[0].text
+  assert.match(text, /BEGIN STORED MEMORY/)
+  assert.match(text, /Postgres 17/)
+  assert.doesNotMatch(text, /无关旧事/, 'below the score floor')
+  assert.equal(steered[0].source.kind, 'everos-memory')
+})
+
+test('a failing recall never throws and never blocks the turn', async () => {
+  const steered = []
+  const ctx = fakeContext({ agent: { steer: (m) => steered.push(m) } })
+  apply(ctx, { ...config, recall: true, recallTimeoutMs: 300 })
+  globalThis.fetch = async () => { throw new Error('network down') }
+  ctx.emit('session/event', { id: 'r2' }, userEvent('这一句会触发检索'))
+  await new Promise((r) => setTimeout(r, 100))
+  assert.equal(steered.length, 0)
 })
 
 test('excluded and empty-base sessions are ignored', async () => {
