@@ -88,7 +88,7 @@ minute.
 | --- | --- | --- |
 | `recall` | `true` | Inject recalled memories |
 | `recallTopK` | `3` | Max episodes injected |
-| `recallMinScore` | `0.3` | Relevance floor |
+| `recallMinScore` | `0.1` | Relevance floor |
 | `recallTimeoutMs` | `2000` | Hard deadline per search |
 | `recallMaxChars` | `1200` | Cap on the injected block |
 

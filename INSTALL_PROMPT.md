@@ -69,7 +69,7 @@ node -e "import('dsh-everos-memory').then(m=>console.log('ok',m.name))"
     minMessages: 1
     recall: true
     recallTopK: 3
-    recallMinScore: 0.3
+    recallMinScore: 0.1
     recallTimeoutMs: 2000
 ```
 

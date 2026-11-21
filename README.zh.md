@@ -76,7 +76,7 @@ token 不必写进 YAML。
 | --- | --- |
 | 检索慢不拖住对话 | `recallTimeoutMs` 硬超时（默认 2s），超时即放弃 |
 | 检索失败不影响这一轮 | 所有异常吞掉，只写审计日志 |
-| 无关记忆不干扰 | `recallMinScore` 阈值（默认 0.3），低于此丢弃 |
+| 无关记忆不干扰 | `recallMinScore` 阈值（默认 0.1），低于此丢弃 |
 | 同一问题不重复注入 | 同一 query 60 秒内只注入一次 |
 | 注入内容不会被当成用户发言再存回去 | 注入消息带 `source.kind=everos-memory`，插件自身跳过 |
 
@@ -84,7 +84,7 @@ token 不必写进 YAML。
 | --- | --- | --- |
 | `recall` | `true` | 是否注入召回 |
 | `recallTopK` | `3` | 最多注入几条 |
-| `recallMinScore` | `0.3` | 相关性下限 |
+| `recallMinScore` | `0.1` | 相关性下限 |
 | `recallTimeoutMs` | `2000` | 单次检索硬超时 |
 | `recallMaxChars` | `1200` | 注入块字符上限 |
 

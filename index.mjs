@@ -63,7 +63,7 @@ export const Config = z.object({
   /** How many episodes a recall may inject. */
   recallTopK: z.number().step(1).min(1).default(3).volatile(),
   /** Relevance floor; below this a result is dropped as noise. */
-  recallMinScore: z.number().step(0.05).min(0).default(0.3).volatile(),
+  recallMinScore: z.number().step(0.05).min(0).default(0.1).volatile(),
   /** Hard deadline for one recall; a slow search never blocks the turn. */
   recallTimeoutMs: z.number().step(100).min(300).default(2000).volatile(),
   /** Cap on the injected block, in characters. */
@@ -162,7 +162,7 @@ export function apply(ctx, config) {
     get excludeSessions() { return read(config.excludeSessions, []) ?? [] },
     get recall() { return read(config.recall, true) },
     get recallTopK() { return Number(read(config.recallTopK, 3)) },
-    get recallMinScore() { return Number(read(config.recallMinScore, 0.3)) },
+    get recallMinScore() { return Number(read(config.recallMinScore, 0.1)) },
     get recallTimeoutMs() { return Number(read(config.recallTimeoutMs, 2000)) },
     get recallMaxChars() { return Number(read(config.recallMaxChars, 1200)) },
   }
@@ -264,9 +264,14 @@ export function apply(ctx, config) {
         { user_id: c.userId, app_id: c.appId, project_id: c.projectId, query: text, method: 'hybrid', top_k: c.recallTopK },
         c.recallTimeoutMs,
       )
-      const episodes = (found?.data?.episodes ?? []).filter((episode) => Number(episode?.score ?? 0) >= c.recallMinScore)
+      const all = found?.data?.episodes ?? []
+      const episodes = all.filter((episode) => Number(episode?.score ?? 0) >= c.recallMinScore)
       const block = recallBlock(episodes)
-      if (!block) return
+      if (!block) {
+        const best = all.reduce((max, episode) => Math.max(max, Number(episode?.score ?? 0)), 0)
+        log('info', `recall: no hit (best=${best.toFixed(3)} < ${c.recallMinScore}) for ${sessionId}`)
+        return
+      }
       const agent = ctx.agents?.get?.(sessionId)
       if (agent === undefined || agent === null) {
         log('info', `recall: no live agent for ${sessionId}, skipped`)
