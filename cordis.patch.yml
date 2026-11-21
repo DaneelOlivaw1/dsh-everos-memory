@@ -1,0 +1,19 @@
+# dsh-everos-memory — bundle patch.
+#
+# Mounts the plugin. Every field is `.volatile()`, so the settings page derives
+# the form from the schema and changes apply without editing this file.
+#
+# `apiKey` is the EverOS **gateway** token, not a model key: the EverOS server
+# has no auth of its own and the gateway is the trust boundary.
+- insert:
+    - id: everos-memory
+      name: dsh-everos-memory
+      config:
+        enabled: true
+        baseUrl: https://memory.mergio.app
+        apiKey: ''
+        userId: daneel
+        appId: default
+        projectId: default
+        idleSeconds: 300
+        minMessages: 2

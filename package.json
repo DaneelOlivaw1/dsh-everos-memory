@@ -1,0 +1,38 @@
+{
+  "name": "dsh-everos-memory",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness bundle plugin: writes each session's exchange to an EverOS memory server once the session has been quiet for a settle window — the host decides when, not the model.",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "cordis",
+    "memory",
+    "everos"
+  ],
+  "engines": {
+    "dsh": ">=0.2.1",
+    "node": ">=22"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.19.0"
+  },
+  "license": "MIT"
+}
