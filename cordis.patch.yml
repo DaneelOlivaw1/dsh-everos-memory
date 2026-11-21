@@ -16,4 +16,4 @@
         appId: default
         projectId: default
         idleSeconds: 300
-        minMessages: 2
+        minMessages: 1

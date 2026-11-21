@@ -50,7 +50,7 @@ export const Config = z.object({
   /** Quiet window before a buffered exchange is written. */
   idleSeconds: z.number().step(1).min(5).default(300).volatile(),
   /** Minimum buffered messages before an idle flush is worth an LLM call. */
-  minMessages: z.number().step(1).min(1).default(2).volatile(),
+  minMessages: z.number().step(1).min(1).default(1).volatile(),
   /** Per-message character cap; long tool dumps are truncated. */
   maxCharsPerMessage: z.number().step(100).min(200).default(4000).volatile(),
   /** Flush pending buffers when a session is disposed. */
@@ -146,7 +146,7 @@ export function apply(ctx, config) {
     get appId() { return read(config.appId, 'default') },
     get projectId() { return read(config.projectId, 'default') },
     get idleSeconds() { return Number(read(config.idleSeconds, 300)) },
-    get minMessages() { return Number(read(config.minMessages, 2)) },
+    get minMessages() { return Number(read(config.minMessages, 1)) },
     get flushOnDispose() { return read(config.flushOnDispose, true) },
     get excludeSessions() { return read(config.excludeSessions, []) ?? [] },
   }
@@ -178,7 +178,10 @@ export function apply(ctx, config) {
     const entry = sessions.get(sessionId)
     if (entry === undefined || entry.busy) return 'busy'
     if (entry.messages.length === 0) return 'empty'
-    if (reason === 'idle' && entry.messages.length < c.minMessages) return 'buffering'
+    if (reason === 'idle' && entry.messages.length < c.minMessages) {
+      log('info', `idle skip: ${entry.messages.length} message(s) < minMessages ${c.minMessages} (${sessionId})`)
+      return 'buffering'
+    }
     if (!base()) {
       log('warn', 'baseUrl is empty; skipping flush')
       return 'unconfigured'
@@ -196,7 +199,7 @@ export function apply(ctx, config) {
       // detection leaves the open tail buffered (same reasoning as everos-mcp).
       const flushed = await post('/api/v2/memory/flush', scope)
       const flushedStatus = flushed?.data?.status ?? flushed?.status
-      log('info', `add=${addedStatus} flush=${flushedStatus}`)
+      log('info', `flushed ${batch.length} message(s) from ${sessionId} (${reason}) add=${addedStatus} flush=${flushedStatus}`)
       entry.messages = entry.messages.slice(batch.length)
       log('info', `flushed ${batch.length} message(s) from ${sessionId} (${reason})`)
       return 'flushed'
