@@ -388,13 +388,22 @@ export function apply(ctx, config) {
     if (!c.enabled || !base()) return
     const sessionId = String(session?.id ?? '')
     if (!sessionId || excluded(sessionId)) return
-    // Only genuine turns count. The harness injects its own user-role messages
-    // (time samples as `time-context`, our own recall notes) and those would
-    // otherwise be remembered as things the user said.
-    const sourceKind = event?.data?.source?.kind
-    if (sourceKind !== undefined && sourceKind !== 'user') {
-      if (sourceKind !== 'everos-memory') log('info', `skipped injected message (${sourceKind})`)
-      return
+    // Only genuine turns count. DSH injects its own messages *as the user role*,
+    // so the role proves nothing; three independent marks do:
+    //   - kind:  'time-context', 'monitor', 'everos-memory', ...
+    //   - form:  'snapshot' (time samples) and 'notice' (injected notes)
+    //   - rpcId: a real client prompt carries the request it came from
+    const source = event?.data?.source
+    if (source !== undefined) {
+      const kind = source.kind
+      const looksInjected = kind !== 'user'
+        || source.form === 'snapshot'
+        || source.form === 'notice'
+        || (kind === 'user' && typeof source.rpcId !== 'string')
+      if (looksInjected) {
+        log('info', `skipped injected message (kind=${kind ?? '-'} form=${source.form ?? '-'})`)
+        return
+      }
     }
     const message = toMemoryMessage(event, config)
     if (message === null) return

@@ -313,6 +313,34 @@ test('a long session is chunked instead of sent in one oversized add', async () 
   assert.equal(bodies.at(-1).url.endsWith('/flush'), true, 'one flush after all adds')
 })
 
+test('a user-role message that is really an injection is dropped', async () => {
+  const ctx = fakeContext()
+  apply(ctx, config)
+  const bodies = []
+  globalThis.fetch = async (url, init) => {
+    bodies.push(JSON.parse(init.body))
+    return { ok: true, json: async () => ({ data: { status: 'queued' } }) }
+  }
+  const definition = ctx.commands.find((command) => command.name === 'everos')
+  const cases = [
+    { kind: 'user', form: 'snapshot' },     // time sample dressed as a user turn
+    { kind: 'user', form: 'notice' },       // injected note
+    { kind: 'user' },                        // user role but no rpcId
+  ]
+  for (const source of cases) {
+    const event = userEvent('这句是注入的')
+    event.data.source = source
+    ctx.emit('session/event', { id: 'dress' }, event)
+  }
+  const real = userEvent('这句是我真的打的')
+  real.data.source = { kind: 'user', rpcId: 'rpc-1' }
+  ctx.emit('session/event', { id: 'dress' }, real)
+  await definition.handler({ sessionId: 'dress', rawInput: 'flush' })
+  const sent = bodies.find((body) => Array.isArray(body.messages))?.messages ?? []
+  assert.equal(sent.length, 1, 'only the rpc-backed turn survives')
+  assert.match(sent[0].content, /真的打的/)
+})
+
 test('harness-injected user messages are not remembered as user speech', async () => {
   const ctx = fakeContext()
   apply(ctx, config)

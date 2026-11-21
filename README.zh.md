@@ -119,7 +119,15 @@ DSH 会以**用户角色**注入自己的消息（时间采样 `source.kind = "t
 `everos-memory`）。它们都不是你说的话，却会被当成用户发言写进记忆，产出一堆
 "daneel 注明浏览器时区为 Asia/Shanghai" 式的噪音。
 
-现在只收 `source.kind` 缺省或等于 `user` 的消息，其余跳过并记一行审计。
+判据有三道，因为 DSH 注入用的就是 user 角色、光看角色没用：
+
+| 判据 | 注入的取值 | 真实用户的取值 |
+| --- | --- | --- |
+| `source.kind` | `time-context` / `monitor` / `everos-memory` … | `user` |
+| `source.form` | `snapshot`（时间采样）/ `notice`（注入提示） | 缺省 |
+| `source.rpcId` | 无 | 有（来自某次客户端请求） |
+
+任意一条命中注入特征就跳过，并记一行 `skipped injected message (kind=… form=…)`。
 
 ## 项目分区（v0.3）
 
