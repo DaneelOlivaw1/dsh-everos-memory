@@ -92,6 +92,32 @@ minute.
 | `recallTimeoutMs` | `2000` | Hard deadline per search |
 | `recallMaxChars` | `1200` | Cap on the injected block |
 
+## What gets captured (v0.5)
+
+A transcript is not a memory. Memory is **why, what was done, and how it
+turned out**. v0.5 captures four signals instead of messages alone:
+
+| Signal | Event | Output |
+| --- | --- | --- |
+| Decisions | `user/message` (after the signal filter) | the user's words |
+| Conclusions | `assistant/message` (final per turn) | the agent's words |
+| Actions | `tool/call` + `tool/result` (mutating tools only) | `[actions] edit index.mjs · ✗ bash pnpm test` |
+| Plan & outputs | `todo/write`, `deliverables/presented` | `[todo] 1/3 ✓ repo · 2/3 ○ tag` |
+
+Acks ("继续", "2", "OK") are dropped, and short turns need a question mark to
+count. Reads are not work: only `write|edit|bash|git|patch|apply|run|mkdir|rm|mv`
+are recorded, capped per turn, with failures marked `✗` and bodies left out.
+
+## Curating it
+
+| Command | Effect |
+| --- | --- |
+| `/everos` | endpoint, scope, buffered count, pending actions |
+| `/everos flush` | write this session now |
+| `/everos remember <fact>` | write one high-signal fact immediately |
+| `/everos review` | list the last 10 episodes, numbered |
+| `/everos forget <n>` | delete episode N from that listing |
+
 ## When the LLM runs (v0.4)
 
 By default extraction happens **once, when the session ends**:

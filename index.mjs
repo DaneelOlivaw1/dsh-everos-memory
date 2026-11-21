@@ -70,12 +70,26 @@ export const Config = z.object({
   projectFromCwd: z.boolean().default(true).volatile(),
   /** Also search the fallback scope, so cross-project facts stay reachable. */
   recallGlobal: z.boolean().default(true).volatile(),
+  /** Record what the turn actually did: files written, commands run. */
+  captureActions: z.boolean().default(true).volatile(),
+  /** Cap on actions recorded per turn, so one busy turn cannot flood the store. */
+  maxActionsPerTurn: z.number().step(1).min(1).default(10).volatile(),
+  /** Tool names whose calls count as work; reads are dropped on purpose. */
+  actionTools: z.string().default('write|edit|bash|shell|git|patch|apply|run|mkdir|rm|mv').volatile(),
+  /** Record the session's todo list and presented deliverables. */
+  capturePlan: z.boolean().default(true).volatile(),
+  /** Drop low-signal user turns ("继续", "2") instead of remembering them. */
+  signalCapture: z.boolean().default(true).volatile(),
+  /** A short user turn needs a question mark to count as signal. */
+  minSignalChars: z.number().step(1).min(1).default(12).volatile(),
   /** Inject memories relevant to the prompt before the model answers. */
   recall: z.boolean().default(true).volatile(),
   /** How many episodes a recall may inject. */
-  recallTopK: z.number().step(1).min(1).default(3).volatile(),
+  recallTopK: z.number().step(1).min(1).default(2).volatile(),
   /** Relevance floor; below this a result is dropped as noise. */
-  recallMinScore: z.number().step(0.05).min(0).default(0.1).volatile(),
+  recallMinScore: z.number().step(0.05).min(0).default(0.25).volatile(),
+  /** Prompts shorter than this are not worth a search unless they ask something. */
+  recallMinPromptChars: z.number().step(1).min(1).default(12).volatile(),
   /** Hard deadline for one recall; a slow search never blocks the turn. */
   recallTimeoutMs: z.number().step(100).min(300).default(2000).volatile(),
   /** Cap on the injected block, in characters. */
@@ -110,6 +124,65 @@ export function messageText(message) {
 export function clampText(text, max) {
   if (!max || text.length <= max) return text
   return `${text.slice(0, max)}…`
+}
+
+
+/** Turns that carry no information: bare acknowledgements and one-word replies. */
+const ACK = /^(ok|okay|好|好的|嗯|行|可以|继续|收到|谢谢|thanks|thx|yes|no|对|是的|\d+)$/i
+
+/**
+ * Is this user turn worth remembering?
+ *
+ * "继续" and "2" are turns, but they say nothing about the user or the work;
+ * remembering them produces facts like "daneel urged the agent on".
+ *
+ * @param text - the user message.
+ * @param options - `signalCapture` off accepts everything; `minSignalChars`
+ *   sets the length below which only a question still counts.
+ * @returns whether the turn should be captured.
+ */
+export function isSignalTurn(text, options = {}) {
+  const { signalCapture = true, minSignalChars = 12 } = options
+  const body = String(text ?? '').replace(/\s+/g, ' ').trim()
+  if (body === '') return false
+  if (!signalCapture) return true
+  if (ACK.test(body.replace(/\s+/g, ''))) return false
+  if (body.length >= minSignalChars) return true
+  return /[?？]/.test(body)
+}
+
+/**
+ * One line for a tool call: the tool plus what it acted on.
+ *
+ * Reads are filtered by the caller; this renders what is left, preferring a
+ * path, then a command, and never dumping a whole argument blob.
+ */
+export function describeToolCall(name, argsJson) {
+  const tool = String(name ?? 'tool')
+  let args = {}
+  try {
+    args = typeof argsJson === 'string' ? JSON.parse(argsJson) : (argsJson ?? {})
+  } catch {
+    args = {}
+  }
+  const target = args.file_path ?? args.path ?? args.filePath ?? args.command ?? args.cmd ?? args.query ?? ''
+  const first = String(target ?? '').split('\n')[0].trim()
+  const short = first.length > 80 ? `${first.slice(0, 80)}…` : first
+  return short === '' ? tool : `${tool} ${short}`
+}
+
+/** Fold one turn's tool calls into a single delimited line, deduped and capped. */
+export function summarizeActions(actions, max = 10) {
+  const seen = new Set()
+  const lines = []
+  for (const action of actions ?? []) {
+    if (lines.length >= max) break
+    const label = `${action?.ok === false ? '✗ ' : ''}${action?.label ?? ''}`.trim()
+    if (label === '' || seen.has(label)) continue
+    seen.add(label)
+    lines.push(label)
+  }
+  return lines.length === 0 ? '' : `[actions] ${lines.join(' · ')}`
 }
 
 /**
@@ -163,6 +236,8 @@ export function apply(ctx, config) {
   /** sessionId -> { messages, timer, busy } */
   const sessions = new Map()
   let received = 0
+  /** Last /everos review listing, so forget <n> can address an episode. */
+  let reviewCache = []
   const auditPath = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'everos-memory.log')
   const log = (level, message) => {
     const line = `${new Date().toISOString()} ${level} ${message}\n`
@@ -207,9 +282,16 @@ export function apply(ctx, config) {
     get maxConcurrentWrites() { return Math.max(1, Number(read(config.maxConcurrentWrites, 1))) },
     get projectFromCwd() { return read(config.projectFromCwd, true) },
     get recallGlobal() { return read(config.recallGlobal, true) },
+    get captureActions() { return read(config.captureActions, true) },
+    get maxActionsPerTurn() { return Math.max(1, Number(read(config.maxActionsPerTurn, 10))) },
+    get actionTools() { return String(read(config.actionTools, 'write|edit|bash|git')) },
+    get capturePlan() { return read(config.capturePlan, true) },
+    get signalCapture() { return read(config.signalCapture, true) },
+    get minSignalChars() { return Math.max(1, Number(read(config.minSignalChars, 12))) },
+    get recallMinPromptChars() { return Math.max(1, Number(read(config.recallMinPromptChars, 12))) },
     get recall() { return read(config.recall, true) },
-    get recallTopK() { return Number(read(config.recallTopK, 3)) },
-    get recallMinScore() { return Number(read(config.recallMinScore, 0.1)) },
+    get recallTopK() { return Number(read(config.recallTopK, 2)) },
+    get recallMinScore() { return Number(read(config.recallMinScore, 0.25)) },
     get recallTimeoutMs() { return Number(read(config.recallTimeoutMs, 2000)) },
     get recallMaxChars() { return Number(read(config.recallMaxChars, 1200)) },
   }
@@ -327,6 +409,8 @@ export function apply(ctx, config) {
     if (!c.recall || !base()) return
     const text = String(query ?? '').trim()
     if (text.length < 4) return
+    // "继续" and "2" would match something; they are not asking for memory.
+    if (text.length < c.recallMinPromptChars && !/[?？]/.test(text)) return
     if (text === lastRecall.query && Date.now() - lastRecall.at < 60_000) return
     lastRecall = { query: text, at: Date.now() }
     try {
@@ -369,6 +453,97 @@ export function apply(ctx, config) {
     }
   }
 
+  /** One buffer per session, created on first sight. */
+  function ensureEntry(sessionId, session) {
+    let entry = sessions.get(sessionId)
+    if (entry === undefined) {
+      entry = {
+        messages: [],
+        timer: undefined,
+        busy: false,
+        projectId: projectFor(session),
+        actions: [],
+        planned: false,
+      }
+      sessions.set(sessionId, entry)
+    }
+    return entry
+  }
+
+  /** Turn tool calls, todos and deliverables into one compact line each. */
+  function handleStructured(sessionId, session, event) {
+    const entry = ensureEntry(sessionId, session)
+    const type = event?.type
+    if (type === 'tool/call') {
+      if (!c.captureActions) return
+      const name = String(event.data?.name ?? '')
+      if (!new RegExp(c.actionTools, 'i').test(name)) return
+      entry.actions.push({
+        callId: event.data?.callId,
+        label: describeToolCall(name, event.data?.arguments),
+        ok: true,
+      })
+      if (entry.actions.length > c.maxActionsPerTurn * 3) entry.actions.shift()
+      return
+    }
+    if (type === 'tool/result') {
+      const hit = entry.actions.find((action) => action.callId === event.data?.callId)
+      if (hit !== undefined) hit.ok = event.data?.message?.isError !== true
+      return
+    }
+    if (type === 'turn/end') {
+      const line = summarizeActions(entry.actions, c.maxActionsPerTurn)
+      entry.actions = []
+      if (line === '') return
+      entry.messages.push({
+        sender_id: `${c.userId}-agent`,
+        role: 'assistant',
+        timestamp: Date.now(),
+        content: line,
+      })
+      schedule(sessionId)
+      return
+    }
+    if (!c.capturePlan) return
+    if (type === 'todo/write') {
+      const items = event.data?.todos ?? event.data?.items ?? event.data?.list ?? []
+      if (!Array.isArray(items) || items.length === 0) return
+      const rendered = items
+        .slice(0, 8)
+        .map((item, index) => {
+          const done = item?.status === 'completed' || item?.done === true
+          const label = String(item?.content ?? item?.text ?? item?.title ?? '').slice(0, 60)
+          return `${index + 1}/${items.length} ${done ? '✓' : '○'} ${label}`.trim()
+        })
+        .join(' · ')
+      entry.messages.push({
+        sender_id: `${c.userId}-agent`,
+        role: 'assistant',
+        timestamp: Date.now(),
+        content: `[todo] ${rendered}`,
+      })
+      schedule(sessionId)
+      return
+    }
+    if (type === 'deliverables/presented') {
+      const files = event.data?.deliverables ?? event.data?.files ?? event.data?.items ?? []
+      if (!Array.isArray(files) || files.length === 0) return
+      const names = files
+        .slice(0, 8)
+        .map((file) => String(file?.path ?? file?.name ?? file?.title ?? ''))
+        .filter((name) => name !== '')
+        .join(', ')
+      if (names === '') return
+      entry.messages.push({
+        sender_id: `${c.userId}-agent`,
+        role: 'assistant',
+        timestamp: Date.now(),
+        content: `[deliverables] ${names}`,
+      })
+      schedule(sessionId)
+    }
+  }
+
   function schedule(sessionId) {
     const entry = sessions.get(sessionId)
     if (entry === undefined) return
@@ -388,6 +563,12 @@ export function apply(ctx, config) {
     if (!c.enabled || !base()) return
     const sessionId = String(session?.id ?? '')
     if (!sessionId || excluded(sessionId)) return
+    const eventType = event?.type
+    if (eventType === 'tool/call' || eventType === 'tool/result' || eventType === 'turn/end'
+      || eventType === 'todo/write' || eventType === 'deliverables/presented') {
+      handleStructured(sessionId, session, event)
+      return
+    }
     // Only genuine turns count. DSH injects its own messages *as the user role*,
     // so the role proves nothing; three independent marks do:
     //   - kind:  'time-context', 'monitor', 'everos-memory', ...
@@ -407,14 +588,15 @@ export function apply(ctx, config) {
     }
     const message = toMemoryMessage(event, config)
     if (message === null) return
+    if (message.role === 'user'
+      && !isSignalTurn(message.content, { signalCapture: c.signalCapture, minSignalChars: c.minSignalChars })) {
+      log('info', `skipped low-signal turn (${c.userId}): ${message.content.slice(0, 20)}`)
+      return
+    }
     received += 1
     if (received === 1) log('info', `first event captured (${sessionId})`)
 
-    let entry = sessions.get(sessionId)
-    if (entry === undefined) {
-      entry = { messages: [], timer: undefined, busy: false, projectId: projectFor(session) }
-      sessions.set(sessionId, entry)
-    }
+    const entry = ensureEntry(sessionId, session)
     entry.messages.push(message)
     schedule(sessionId)
     if (message.role === 'user') void recall(sessionId, message.content, entry.projectId)
@@ -438,10 +620,69 @@ export function apply(ctx, config) {
       input: { hint: '[status|flush]' },
       handler: async (invocation) => {
         const sessionId = String(invocation?.agent?.session?.id ?? invocation?.sessionId ?? '')
-        const verb = String(invocation?.rawInput ?? '').trim().split(/\s+/)[0] || 'status'
+        const raw = String(invocation?.rawInput ?? '').trim()
+        const verb = raw.split(/\s+/)[0] || 'status'
+        const rest = raw.slice(verb.length).trim()
         if (verb === 'flush') {
           const result = await flush(sessionId, 'manual')
           return `EverOS: ${result}${result === 'empty' ? '（这个会话还没有可写入的内容）' : ''}`
+        }
+        if (verb === 'remember') {
+          if (rest === '') return '用法：/everos remember <要记住的事实>'
+          const entry = sessions.get(sessionId)
+          const project = entry?.projectId ?? projectFor(invocation?.agent?.session)
+          try {
+            await post('/api/v2/memory/add', {
+              session_id: sessionId,
+              app_id: c.appId,
+              project_id: project,
+              messages: [{ sender_id: c.userId, role: 'user', timestamp: Date.now(), content: `[remember] ${rest}` }],
+              async_mode: c.asyncWrite,
+            })
+            await post('/api/v2/memory/flush', { session_id: sessionId, app_id: c.appId, project_id: project, async_mode: c.asyncWrite })
+            log('info', `remember: ${rest.slice(0, 60)}`)
+            return 'EverOS: 已记住（会话结束后可被召回）'
+          } catch (error) {
+            return `EverOS: 记忆失败（${error instanceof Error ? error.message.slice(0, 120) : String(error)}）`
+          }
+        }
+        if (verb === 'review') {
+          const entry = sessions.get(sessionId)
+          const project = entry?.projectId ?? c.projectId
+          try {
+            const found = await post('/api/v2/memory/get', {
+              user_id: c.userId, app_id: c.appId, project_id: project,
+              memory_type: 'episode', page: 1, page_size: 10,
+            })
+            const episodes = found?.data?.episodes ?? []
+            reviewCache = episodes
+            if (episodes.length === 0) return 'EverOS: 这个作用域还没有 episode'
+            const lines = episodes.map((episode, index) => {
+              const when = String(episode?.timestamp ?? '').slice(11, 16)
+              return `${index + 1}) ${when} ${String(episode?.summary ?? '').slice(0, 70)}`
+            })
+            return [`EverOS 最近 ${episodes.length} 条（${project}）：`, ...lines, '删除：/everos forget <编号>'].join('\n')
+          } catch (error) {
+            return `EverOS: 读取失败（${error instanceof Error ? error.message.slice(0, 120) : String(error)}）`
+          }
+        }
+        if (verb === 'forget') {
+          const index = Number.parseInt(rest, 10)
+          const target = reviewCache[index - 1]
+          if (target === undefined) return '先执行 /everos review，再用它显示的编号'
+          const entry = sessions.get(sessionId)
+          const project = entry?.projectId ?? c.projectId
+          try {
+            await post('/api/v2/memory/delete_by_ids', {
+              memory_type: 'episode', memory_ids: [target.id],
+              app_id: c.appId, project_id: project, user_id: c.userId,
+              reason: { code: 'other', note: 'manual forget' },
+            })
+            reviewCache = reviewCache.filter((episode) => episode.id !== target.id)
+            return `EverOS: 已删除 ${target.id}`
+          } catch (error) {
+            return `EverOS: 删除失败（${error instanceof Error ? error.message.slice(0, 120) : String(error)}）`
+          }
         }
         const entry = sessions.get(sessionId)
         return [
@@ -449,7 +690,8 @@ export function apply(ctx, config) {
           `- 端点：${base() || '(未配置 baseUrl)'}`,
           `- 归属：${c.userId} / ${c.appId} / ${entry?.projectId ?? c.projectId}${c.projectFromCwd ? '（按 cwd 派生）' : ''}`,
           `- 空闲窗口：${c.idleSeconds}s，最少 ${c.minMessages} 条`,
-          `- 当前缓冲：${entry?.messages.length ?? 0} 条`,
+          `- 当前缓冲：${entry?.messages.length ?? 0} 条（含 ${entry?.actions.length ?? 0} 条待汇总的工具动作）`,
+          `- 信号过滤：${c.signalCapture ? `开（<${c.minSignalChars} 字且非问句跳过）` : '关'}；动作捕获：${c.captureActions ? '开' : '关'}`,
         ].join('\n')
       },
     })

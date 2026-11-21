@@ -26,8 +26,15 @@
         asyncWrite: true
         maxConcurrentWrites: 1
         maxBatchMessages: 60
+        # What gets captured: signal turns, the work done, the plan, deliverables.
+        signalCapture: true
+        minSignalChars: 12
+        captureActions: true
+        maxActionsPerTurn: 10
+        capturePlan: true
         recall: true
-        recallTopK: 3
-        recallMinScore: 0.1
+        recallTopK: 2
+        recallMinScore: 0.25
+        recallMinPromptChars: 12
         recallTimeoutMs: 2000
         recallMaxChars: 1200

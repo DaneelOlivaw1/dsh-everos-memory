@@ -6,7 +6,7 @@
  *   node test.mjs
  */
 import assert from 'node:assert/strict'
-import { apply, messageText, clampText, toMemoryMessage, projectIdFromCwd } from './index.mjs'
+import { apply, messageText, clampText, toMemoryMessage, projectIdFromCwd, isSignalTurn } from './index.mjs'
 
 const config = {
   enabled: true,
@@ -21,6 +21,7 @@ const config = {
   flushOnDispose: true,
   excludeSessions: ['subagent'],
   recall: false,
+  signalCapture: false,
 }
 
 /** Minimal Cordis context: records listeners, runs injected callbacks. */
@@ -178,7 +179,7 @@ test('volatile refs ({} / get()) are unwrapped like plain values', async () => {
 test('recall injects high-score hits as a delimited notice', async () => {
   const steered = []
   const ctx = fakeContext({ agent: { steer: (m) => steered.push(m) } })
-  apply(ctx, { ...config, recall: true, recallMinScore: 0.3 })
+  apply(ctx, { ...config, recall: true, recallMinScore: 0.3, recallMinPromptChars: 1 })
   globalThis.fetch = async (url) => ({
     ok: true,
     json: async () => (String(url).includes('/search')
@@ -221,7 +222,7 @@ test('project id derives from cwd and stays inside the ScopeId charset', () => {
 test('recall searches the project scope and the fallback, without duplicates', async () => {
   const steered = []
   const ctx = fakeContext({ agent: { steer: (m) => steered.push(m) } })
-  apply(ctx, { ...config, recall: true, recallMinScore: 0.1, projectId: 'default' })
+  apply(ctx, { ...config, recall: true, recallMinScore: 0.1, recallMinPromptChars: 1, projectId: 'default' })
   const searches = []
   globalThis.fetch = async (url, init) => {
     const body = JSON.parse(init.body)
@@ -358,6 +359,90 @@ test('harness-injected user messages are not remembered as user speech', async (
   const sent = bodies.find((body) => Array.isArray(body.messages))?.messages ?? []
   assert.equal(sent.length, 1, 'only the real turn is stored')
   assert.match(sent[0].content, /这句才是人说的/)
+})
+
+test('short, non-question prompts do not trigger a search', async () => {
+  const ctx = fakeContext({ agent: { steer: () => {} } })
+  apply(ctx, { ...config, recall: true, recallMinPromptChars: 12 })
+  let searches = 0
+  globalThis.fetch = async () => {
+    searches += 1
+    return { ok: true, json: async () => ({ data: { episodes: [] } }) }
+  }
+  ctx.emit('session/event', { id: 'gate' }, userEvent('继续'))
+  ctx.emit('session/event', { id: 'gate' }, userEvent('那个呢？'))
+  await new Promise((r) => setTimeout(r, 60))
+  assert.equal(searches, 1, 'only the question cleared the gate')
+})
+
+test('signal turns: acks drop, questions and long turns stay', () => {
+  const options = { signalCapture: true, minSignalChars: 12 }
+  for (const ack of ['继续', '2', '好', 'OK', '嗯']) assert.equal(isSignalTurn(ack, options), false, ack)
+  assert.equal(isSignalTurn('能用吗？', options), true)
+  assert.equal(isSignalTurn('我决定用 Postgres 17 和 Atlas 做迁移', options), true)
+  assert.equal(isSignalTurn('继续', { signalCapture: false }), true)
+})
+
+test('a turn of tool calls becomes one actions line', async () => {
+  const ctx = fakeContext()
+  apply(ctx, { ...config })
+  const bodies = []
+  globalThis.fetch = async (url, init) => {
+    bodies.push({ url: String(url), body: JSON.parse(init.body) })
+    return { ok: true, json: async () => ({ data: { status: 'queued' } }) }
+  }
+  const session = { id: 'work' }
+  ctx.emit('session/event', session, { type: 'tool/call', data: { callId: 'c1', name: 'edit', arguments: JSON.stringify({ file_path: '/p/index.mjs' }) } })
+  ctx.emit('session/event', session, { type: 'tool/call', data: { callId: 'c2', name: 'bash', arguments: JSON.stringify({ command: 'pnpm test' }) } })
+  ctx.emit('session/event', session, { type: 'tool/result', data: { callId: 'c2', message: { isError: true } } })
+  ctx.emit('session/event', session, { type: 'tool/call', data: { callId: 'c3', name: 'read', arguments: JSON.stringify({ file_path: '/p/x' }) } })
+  ctx.emit('session/event', session, { type: 'turn/end', data: {} })
+  const definition = ctx.commands.find((command) => command.name === 'everos')
+  await definition.handler({ sessionId: 'work', rawInput: 'flush' })
+  const sent = bodies.find((call) => Array.isArray(call.body.messages))?.body.messages ?? []
+  const actions = sent.find((message) => message.content.startsWith('[actions]'))
+  assert.ok(actions, 'actions line present')
+  assert.match(actions.content, /edit \/p\/index\.mjs/)
+  assert.match(actions.content, /✗ bash pnpm test/, 'failure is marked')
+  assert.doesNotMatch(actions.content, /read/, 'reads are not work')
+})
+
+test('the todo list is remembered as a plan line', async () => {
+  const ctx = fakeContext()
+  apply(ctx, { ...config })
+  const bodies = []
+  globalThis.fetch = async (url, init) => {
+    bodies.push({ url: String(url), body: JSON.parse(init.body) })
+    return { ok: true, json: async () => ({ data: { status: 'queued' } }) }
+  }
+  const session = { id: 'plan' }
+  ctx.emit('session/event', session, {
+    type: 'todo/write',
+    data: { todos: [{ content: '建仓库', status: 'completed' }, { content: '推 tag', status: 'pending' }] },
+  })
+  const definition = ctx.commands.find((command) => command.name === 'everos')
+  await definition.handler({ sessionId: 'plan', rawInput: 'flush' })
+  const sent = bodies.find((call) => Array.isArray(call.body.messages))?.body.messages ?? []
+  const todo = sent.find((message) => message.content.startsWith('[todo]'))
+  assert.ok(todo, 'plan line present')
+  assert.match(todo.content, /1\/2 ✓ 建仓库/)
+  assert.match(todo.content, /2\/2 ○ 推 tag/)
+})
+
+test('/everos remember writes a fact immediately', async () => {
+  const ctx = fakeContext()
+  apply(ctx, { ...config })
+  const bodies = []
+  globalThis.fetch = async (url, init) => {
+    bodies.push({ url: String(url), body: JSON.parse(init.body) })
+    return { ok: true, json: async () => ({ data: { status: 'queued' } }) }
+  }
+  const definition = ctx.commands.find((command) => command.name === 'everos')
+  const reply = await definition.handler({ sessionId: 'rm', rawInput: 'remember 主力数据库是 Postgres 17' })
+  assert.match(reply, /已记住/)
+  const add = bodies.find((call) => call.url.endsWith('/add'))
+  assert.match(add.body.messages[0].content, /\[remember\] 主力数据库是 Postgres 17/)
+  assert.ok(bodies.some((call) => call.url.endsWith('/flush')), 'flushed right away')
 })
 
 test('excluded and empty-base sessions are ignored', async () => {

@@ -113,6 +113,36 @@ token 不必写进 YAML。
 | `maxConcurrentWrites` | `1` | 本机同时写几个（与队列互为保险） |
 | `maxBatchMessages` | `60` | 每次 `/add` 最多几条消息；整场对话一次性提交会超时失败 |
 
+## 采集口径（v0.5）
+
+对话转写不是记忆。记忆应该是「**为了什么、做了什么、结果如何**」。所以 v0.5 不再只收消息，
+而是按四种信号采集：
+
+| 信号 | 来源事件 | 产出 |
+| --- | --- | --- |
+| 决定与事实 | `user/message`（过信号过滤） | 用户原话 |
+| 结论 | `assistant/message`（每轮最终那条） | 助手原话 |
+| 行动 | `tool/call` + `tool/result`（只收写类工具） | `[actions] edit index.mjs · ✗ bash pnpm test` |
+| 计划与交付 | `todo/write`、`deliverables/presented` | `[todo] 1/3 ✓ 建仓库 · 2/3 ○ 推 tag` |
+
+**信号过滤**：`继续`、`2`、`好`、`OK` 这类无信息轮次不记；短于 `minSignalChars` 的句子要带问号才算。
+否则会生成「daneel 催促 agent」这种空事实。
+
+**只收有副作用的工具**（`write|edit|bash|git|patch|apply|run|mkdir|rm|mv`），读文件不记；
+每轮最多 `maxActionsPerTurn` 条，失败标记 `✗`，输出体不进记忆。
+
+## 策展命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `/everos` | 端点、作用域、缓冲条数、待汇总动作数 |
+| `/everos flush` | 立刻写入本会话 |
+| `/everos remember <事实>` | **立即**记一条高信号事实，不等自动抽取 |
+| `/everos review` | 列出最近 10 条 episode（带编号） |
+| `/everos forget <编号>` | 删掉 `review` 列出的第 N 条 |
+
+`review` / `forget` 存在的意义：没有它们，纠正记忆只能靠 curl API。
+
 ## 只记真实发言（v0.4.2）
 
 DSH 会以**用户角色**注入自己的消息（时间采样 `source.kind = "time-context"`、本插件的召回提示
