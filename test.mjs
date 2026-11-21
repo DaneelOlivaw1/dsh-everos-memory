@@ -131,7 +131,7 @@ test('a failed add keeps the buffer for the next attempt', async () => {
 
   fail = false
   assert.equal(await definition.handler({ sessionId: 's2', rawInput: 'flush' }), 'EverOS: flushed')
-  assert.equal(calls.length, 2, 'buffer survived the failure')
+  assert.equal(calls.length, 3, 'buffer survived the failure: one retried add, then flush')
 })
 
 test('idle timer fires after the quiet window', async () => {

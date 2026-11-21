@@ -23,6 +23,9 @@
  * transcript over.
  */
 
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -114,11 +117,20 @@ export function toMemoryMessage(event, config) {
 export function apply(ctx, config) {
   /** sessionId -> { messages, timer, busy } */
   const sessions = new Map()
+  let received = 0
+  const auditPath = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'everos-memory.log')
   const log = (level, message) => {
+    const line = `${new Date().toISOString()} ${level} ${message}\n`
     try {
       ctx.logger?.[level]?.(`everos-memory: ${message}`)
     } catch {
-      /* logging must never break capture */
+      /* the harness logger is optional */
+    }
+    try {
+      mkdirSync(dirname(auditPath), { recursive: true })
+      appendFileSync(auditPath, line)
+    } catch {
+      /* a failing audit sink must never break capture */
     }
   }
 
@@ -179,10 +191,12 @@ export function apply(ctx, config) {
     const scope = { session_id: sessionId, app_id: c.appId, project_id: c.projectId }
     try {
       const added = await post('/api/v2/memory/add', { ...scope, messages: batch })
-      const status = added?.data?.status ?? added?.status
-      if (status === 'accumulated') {
-        await post('/api/v2/memory/flush', scope)
-      }
+      const addedStatus = added?.data?.status ?? added?.status
+      // Always flush: "extracted" only means one cell closed, and boundary
+      // detection leaves the open tail buffered (same reasoning as everos-mcp).
+      const flushed = await post('/api/v2/memory/flush', scope)
+      const flushedStatus = flushed?.data?.status ?? flushed?.status
+      log('info', `add=${addedStatus} flush=${flushedStatus}`)
       entry.messages = entry.messages.slice(batch.length)
       log('info', `flushed ${batch.length} message(s) from ${sessionId} (${reason})`)
       return 'flushed'
@@ -212,6 +226,8 @@ export function apply(ctx, config) {
     if (!sessionId || excluded(sessionId)) return
     const message = toMemoryMessage(event, config)
     if (message === null) return
+    received += 1
+    if (received === 1) log('info', `first event captured (${sessionId})`)
 
     let entry = sessions.get(sessionId)
     if (entry === undefined) {
