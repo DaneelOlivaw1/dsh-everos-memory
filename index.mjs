@@ -24,7 +24,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
@@ -232,6 +232,31 @@ export function projectIdFromCwd(cwd, fallback = 'default') {
   return name
 }
 
+/**
+ * Project id for a working directory, preferring the repository it belongs to.
+ *
+ * A subdirectory of a repo is the same project as the repo root, so the walk
+ * looks for `.git` first; only when there is none does the directory name stand
+ * in for the project. A business scope should not split because a session
+ * happened to start one level deeper.
+ *
+ * @param cwd - absolute working directory, if any.
+ * @param fallback - scope when nothing usable is found.
+ * @param hasGitRoot - injectable predicate, so this stays testable.
+ * @returns a valid `project_id`.
+ */
+export function projectIdFromWorkspace(cwd, fallback = 'default', hasGitRoot = (dir) => existsSync(join(dir, '.git'))) {
+  if (typeof cwd !== 'string' || cwd.trim() === '') return fallback
+  let current = cwd
+  for (let depth = 0; depth < 12; depth += 1) {
+    if (hasGitRoot(current)) return projectIdFromCwd(current, fallback)
+    const parent = dirname(current)
+    if (parent === current || parent === '/') break
+    current = parent
+  }
+  return projectIdFromCwd(cwd, fallback)
+}
+
 export function apply(ctx, config) {
   /** sessionId -> { messages, timer, busy } */
   const sessions = new Map()
@@ -255,10 +280,15 @@ export function apply(ctx, config) {
   }
 
 
-  /** Scope for one session: its own project unless cwd scoping is off. */
+  /** Explicit `/everos scope <name>` choices, per session. */
+  const scopeOverrides = new Map()
+
+  /** Scope for one session: an explicit pick, else the repository, else the fallback. */
   const projectFor = (session) => {
+    const explicit = scopeOverrides.get(String(session?.id ?? ''))
+    if (explicit !== undefined) return explicit
     if (!c.projectFromCwd) return c.projectId
-    return projectIdFromCwd(session?.header?.meta?.cwd ?? session?.header?.cwd, c.projectId)
+    return projectIdFromWorkspace(session?.header?.meta?.cwd ?? session?.header?.cwd, c.projectId)
   }
 
   const excluded = (id) => (c.excludeSessions ?? []).some((needle) => needle && id.includes(needle))
@@ -646,6 +676,53 @@ export function apply(ctx, config) {
             return `EverOS: 记忆失败（${error instanceof Error ? error.message.slice(0, 120) : String(error)}）`
           }
         }
+        if (verb === 'scope') {
+          if (rest === '') {
+            const entry = sessions.get(sessionId)
+            const current = entry?.projectId ?? projectFor(invocation?.agent?.session)
+            const overridden = scopeOverrides.has(sessionId)
+            return `EverOS: 当前作用域 ${current}${overridden ? '（手动指定）' : '（按项目自动判定）'}`
+          }
+          const name = rest.toLowerCase().replace(/[^a-z0-9_.-]/g, '-').slice(0, 64)
+          if (name === '' || name === '.' || name === '..') return '用法：/everos scope <作用域名>（字母数字 _ . -）'
+          scopeOverrides.set(sessionId, name)
+          const entry = sessions.get(sessionId)
+          if (entry !== undefined) entry.projectId = name
+          log('info', `scope override for ${sessionId}: ${name}`)
+          return `EverOS: 本会话改用作用域 ${name}`
+        }
+        if (verb === 'adopt') {
+          const source = rest || 'default'
+          const target = sessions.get(sessionId)?.projectId ?? c.projectId
+          if (source === target) return `EverOS: 源和目标是同一个作用域（${target}）`
+          try {
+            const found = await post('/api/v2/memory/get', {
+              user_id: c.userId, app_id: c.appId, project_id: source,
+              memory_type: 'episode', page: 1, page_size: 50,
+            })
+            const episodes = found?.data?.episodes ?? []
+            if (episodes.length === 0) return `EverOS: ${source} 里没有 episode`
+            const messages = episodes
+              .filter((episode) => String(episode?.summary ?? '') !== '')
+              .map((episode) => ({
+                sender_id: c.userId,
+                role: 'user',
+                timestamp: Date.now(),
+                content: `[adopted from ${episode.id}] ${episode.summary}`,
+              }))
+            const adoptedId = `adopt-${Date.now()}`
+            await post('/api/v2/memory/add', {
+              session_id: adoptedId, app_id: c.appId, project_id: target, messages, async_mode: c.asyncWrite,
+            })
+            await post('/api/v2/memory/flush', {
+              session_id: adoptedId, app_id: c.appId, project_id: target, async_mode: c.asyncWrite,
+            })
+            log('info', `adopted ${messages.length} episode(s) from ${source} into ${target}`)
+            return `EverOS: 已把 ${messages.length} 条从 ${source} 重新记入 ${target}（原条目保留，可 /everos forget 清理）`
+          } catch (error) {
+            return `EverOS: 迁移失败（${error instanceof Error ? error.message.slice(0, 120) : String(error)}）`
+          }
+        }
         if (verb === 'review') {
           const entry = sessions.get(sessionId)
           const project = entry?.projectId ?? c.projectId
@@ -688,7 +765,7 @@ export function apply(ctx, config) {
         return [
           `EverOS 记忆捕获 · ${c.enabled ? '开启' : '关闭'}`,
           `- 端点：${base() || '(未配置 baseUrl)'}`,
-          `- 归属：${c.userId} / ${c.appId} / ${entry?.projectId ?? c.projectId}${c.projectFromCwd ? '（按 cwd 派生）' : ''}`,
+          `- 归属：${c.userId} / ${c.appId} / ${entry?.projectId ?? c.projectId}${scopeOverrides.has(sessionId) ? '（手动指定）' : c.projectFromCwd ? '（按仓库根目录判定）' : ''}`,
           `- 空闲窗口：${c.idleSeconds}s，最少 ${c.minMessages} 条`,
           `- 当前缓冲：${entry?.messages.length ?? 0} 条（含 ${entry?.actions.length ?? 0} 条待汇总的工具动作）`,
           `- 信号过滤：${c.signalCapture ? `开（<${c.minSignalChars} 字且非问句跳过）` : '关'}；动作捕获：${c.captureActions ? '开' : '关'}`,

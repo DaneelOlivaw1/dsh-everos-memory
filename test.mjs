@@ -6,7 +6,7 @@
  *   node test.mjs
  */
 import assert from 'node:assert/strict'
-import { apply, messageText, clampText, toMemoryMessage, projectIdFromCwd, isSignalTurn } from './index.mjs'
+import { apply, messageText, clampText, toMemoryMessage, projectIdFromCwd, projectIdFromWorkspace, isSignalTurn } from './index.mjs'
 
 const config = {
   enabled: true,
@@ -443,6 +443,30 @@ test('/everos remember writes a fact immediately', async () => {
   const add = bodies.find((call) => call.url.endsWith('/add'))
   assert.match(add.body.messages[0].content, /\[remember\] 主力数据库是 Postgres 17/)
   assert.ok(bodies.some((call) => call.url.endsWith('/flush')), 'flushed right away')
+})
+
+test('a subdirectory resolves to its repository, not to its own name', () => {
+  const hasGit = (dir) => dir === '/Users/d/repo'
+  assert.equal(projectIdFromWorkspace('/Users/d/repo/src/deep', 'default', hasGit), 'repo')
+  assert.equal(projectIdFromWorkspace('/Users/d/lonely', 'default', hasGit), 'lonely')
+})
+
+test('/everos scope pins the session to a named scope', async () => {
+  const ctx = fakeContext()
+  apply(ctx, { ...config })
+  const bodies = []
+  globalThis.fetch = async (url, init) => {
+    bodies.push({ url: String(url), body: JSON.parse(init.body) })
+    return { ok: true, json: async () => ({ data: { status: 'queued' } }) }
+  }
+  const definition = ctx.commands.find((command) => command.name === 'everos')
+  const session = { id: 'scope-me', header: { cwd: '/Users/d/project/whatever' } }
+  const reply = await definition.handler({ sessionId: 'scope-me', rawInput: 'scope memory-core' })
+  assert.match(reply, /memory-core/)
+  ctx.emit('session/event', session, userEvent('这条要落到指定作用域'))
+  await definition.handler({ sessionId: 'scope-me', rawInput: 'flush' })
+  const add = bodies.find((call) => call.url.endsWith('/add'))
+  assert.equal(add.body.project_id, 'memory-core')
 })
 
 test('excluded and empty-base sessions are ignored', async () => {

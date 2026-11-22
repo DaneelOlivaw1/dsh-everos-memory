@@ -140,6 +140,8 @@ token 不必写进 YAML。
 | `/everos remember <事实>` | **立即**记一条高信号事实，不等自动抽取 |
 | `/everos review` | 列出最近 10 条 episode（带编号） |
 | `/everos forget <编号>` | 删掉 `review` 列出的第 N 条 |
+| `/everos scope <名>` | 本会话固定用这个作用域（默认按仓库自动判定） |
+| `/everos adopt [源]` | 把源作用域（默认 `default`）的 episode 重新记入当前作用域 |
 
 `review` / `forget` 存在的意义：没有它们，纠正记忆只能靠 curl API。
 
@@ -167,7 +169,13 @@ EverOS 的 `app_id` / `project_id` 在磁盘层隔离记忆。插件默认**按�
 /Users/daneel/project/everos-memory-deploy  ->  project_id = everos-memory-deploy
 ```
 
-规则：
+规则（v0.5.1）：
+
+1. 显式指定优先：`/everos scope <name>` 之后本会话固定用它
+2. 否则**向上找 git 仓库根**，用仓库目录名——`repo/src/deep` 和 `repo` 是同一个项目
+3. 没有 git 才退化为 cwd 目录名
+
+老规则：
 - 取 cwd 的目录名，转小写，非法字符折成 `-`，截断 64 字符——满足 EverOS 的 `^[a-zA-Z0-9_.-]+$`
 - 拿不到 cwd 时回落到配置里的 `projectId`（默认 `default`）
 
